@@ -1,6 +1,6 @@
 const { BlobServiceClient } = require('@azure/storage-blob');
 
-const CONTAINER_NAME = 'league-data';
+const CONTAINER_NAME = 'wh-bowls-league-data';
 
 function getContainerClient() {
   const connStr = process.env.AZURE_STORAGE_CONNECTION_STRING;
