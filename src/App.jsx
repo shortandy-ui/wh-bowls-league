@@ -2,12 +2,14 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Trophy, Lock, Unlock, Search, Download, RotateCcw, ShieldCheck,
   Settings2, Users, CalendarDays, ChevronDown, ChevronUp, Check,
-  X, AlertTriangle, LogOut, ListChecks, ClipboardList, RefreshCw
+  X, AlertTriangle, LogOut, ListChecks, ClipboardList, RefreshCw,
+  Upload, Plus, Trash2, BookUser
 } from 'lucide-react';
 
 const ADMIN_PASSWORD = 'fish';
 const TEAM_PASSWORD = 'chips';
 const SIZES = [7, 8, 9, 10];
+const MAX_CONTACTS = 32;
 
 const PALETTE = {
   green: '#1C4A34',
@@ -38,8 +40,58 @@ function defaultData() {
     ],
     resultsLocked: false,
     lastBackup: null,
+    contacts: [],
   };
 }
+
+/* ---------------- contacts helpers ---------------- */
+
+function newContactId() {
+  return Math.random().toString(36).slice(2, 10);
+}
+
+function blankContact() {
+  return { id: newContactId(), role: '', name: '', phone: '', email: '' };
+}
+
+// Reads pasted lines. Each line can be separated by commas, or by tabs
+// (which is what you get when copying rows out of Excel or Word tables).
+// Order: Role/Team (optional), Name, Telephone, Email.
+// Email is spotted by the "@" and the phone by its digits, so those two
+// can be in any position or left out.
+function parseContactLines(text) {
+  const contacts = [];
+  const skipped = [];
+  text.split(/\r?\n/).forEach(raw => {
+    const line = raw.trim();
+    if (!line) return;
+    const parts = (line.includes('\t') ? line.split('\t') : line.split(','))
+      .map(s => s.trim().replace(/^"(.*)"$/, '$1').trim())
+      .filter(s => s !== '');
+    if (parts.length === 0) return;
+    const lower = line.toLowerCase();
+    if (!line.includes('@') && (lower.includes('email') || lower.includes('e-mail')) && lower.includes('name')) {
+      return; // heading row
+    }
+    let email = '';
+    let phone = '';
+    const words = [];
+    parts.forEach(p => {
+      const digits = p.replace(/\D/g, '');
+      if (!email && p.includes('@')) email = p;
+      else if (!phone && digits.length >= 6 && /^[+()\d\s.\-]+$/.test(p)) phone = p;
+      else words.push(p);
+    });
+    let role = '';
+    let name = '';
+    if (words.length === 1) name = words[0];
+    else if (words.length >= 2) { role = words[0]; name = words.slice(1).join(', '); }
+    if (!name) { skipped.push(line); return; }
+    contacts.push({ id: newContactId(), role, name, phone, email });
+  });
+  return { contacts, skipped };
+}
+
 
 function generateFixtures(teams) {
   let list = [...teams];
@@ -380,12 +432,298 @@ function PasswordGate({ onSuccess, password, title, helpText }) {
 }
 
 function TeamLeaderPage({ data, resultsLocked, onUpdateFixture }) {
+  const [view, setView] = useState('results');
+  const contactCount = (data.contacts || []).length;
+  const VIEWS = [
+    { id: 'results', label: 'Enter results', icon: ClipboardList },
+    { id: 'contacts', label: `Contacts${contactCount ? ` (${contactCount})` : ''}`, icon: BookUser },
+  ];
   return (
     <div>
-      <div className="rounded-lg p-3 mb-4 text-sm" style={{ backgroundColor: PALETTE.cream, color: PALETTE.ink }}>
-        Find your match below, then enter the shots scored on each rink and the date it was played. Changes save automatically.
+      <div className="flex gap-2 flex-wrap mb-4">
+        {VIEWS.map(v => (
+          <button
+            key={v.id}
+            onClick={() => setView(v.id)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-semibold"
+            style={{
+              backgroundColor: view === v.id ? PALETTE.maroon : PALETTE.cream,
+              color: view === v.id ? '#fff' : PALETTE.ink,
+            }}
+          >
+            <v.icon size={14} /> {v.label}
+          </button>
+        ))}
       </div>
-      <ResultsEntry divisions={data.divisions} resultsLocked={resultsLocked} onUpdateFixture={onUpdateFixture} />
+
+      {view === 'results' && (
+        <>
+          <div className="rounded-lg p-3 mb-4 text-sm" style={{ backgroundColor: PALETTE.cream, color: PALETTE.ink }}>
+            Find your match below, then enter the shots scored on each rink and the date it was played. Changes save automatically.
+          </div>
+          <ResultsEntry divisions={data.divisions} resultsLocked={resultsLocked} onUpdateFixture={onUpdateFixture} />
+        </>
+      )}
+
+      {view === 'contacts' && <ContactsDirectory contacts={data.contacts || []} />}
+    </div>
+  );
+}
+
+/* ---------------- Contacts: read-only directory for team leaders ---------------- */
+
+function ContactsDirectory({ contacts, title }) {
+  const [query, setQuery] = useState('');
+  const q = query.trim().toLowerCase();
+  const list = contacts.filter(c =>
+    !q || [c.role, c.name, c.phone, c.email].some(v => (v || '').toLowerCase().includes(q))
+  );
+
+  if (contacts.length === 0) {
+    return (
+      <div className="text-center py-12 rounded-xl" style={{ backgroundColor: PALETTE.cream }}>
+        <BookUser size={28} className="mx-auto mb-2" style={{ color: PALETTE.gold }} />
+        <p className="font-semibold" style={{ color: PALETTE.green }}>No contacts yet</p>
+        <p className="text-sm text-gray-600 mt-1">The league admin hasn't added the contacts list yet.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {title && (
+        <div className="flex items-center gap-2 mb-3">
+          <div className="w-1.5 h-6 rounded-full" style={{ backgroundColor: PALETTE.maroon }} />
+          <h2 className="text-xl font-bold" style={{ color: PALETTE.green, fontFamily: "'Fraunces', serif" }}>{title}</h2>
+        </div>
+      )}
+      <div className="flex items-center gap-1.5 border rounded-md px-2.5 py-1.5 mb-3 bg-white max-w-md" style={{ borderColor: PALETTE.creamDark }}>
+        <Search size={15} className="text-gray-400" />
+        <input
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          placeholder="Search by name, team or role…"
+          className="flex-1 text-sm focus:outline-none"
+        />
+        {query && <button onClick={() => setQuery('')}><X size={14} className="text-gray-400" /></button>}
+      </div>
+
+      <div className="overflow-x-auto rounded-lg border" style={{ borderColor: PALETTE.creamDark }}>
+        <table className="w-full text-sm min-w-[600px]">
+          <thead>
+            <tr style={{ backgroundColor: PALETTE.green, color: PALETTE.cream }}>
+              <th className="text-left font-semibold py-2 pl-3 pr-2">Team / role</th>
+              <th className="text-left font-semibold py-2 px-2">Name</th>
+              <th className="text-left font-semibold py-2 px-2">Telephone</th>
+              <th className="text-left font-semibold py-2 pr-3 pl-2">Email</th>
+            </tr>
+          </thead>
+          <tbody>
+            {list.map((c, i) => (
+              <tr
+                key={c.id}
+                className="border-t"
+                style={{ borderColor: PALETTE.creamDark, backgroundColor: i % 2 === 0 ? '#FFFFFF' : PALETTE.cream }}
+              >
+                <td className="py-2 pl-3 pr-2" style={{ color: PALETTE.green }}>{c.role || '—'}</td>
+                <td className="py-2 px-2 font-semibold" style={{ color: PALETTE.ink }}>{c.name}</td>
+                <td className="py-2 px-2 whitespace-nowrap">
+                  {c.phone || '—'}
+                </td>
+                <td className="py-2 pr-3 pl-2 break-all">
+                  {c.email || '—'}
+                </td>
+              </tr>
+            ))}
+            {list.length === 0 && (
+              <tr><td colSpan={4} className="text-center py-6 text-gray-500">No contacts match your search.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Contacts: admin editor ---------------- */
+
+function ContactsAdmin({ contacts, onChange }) {
+  const [pasteText, setPasteText] = useState('');
+  const [mode, setMode] = useState('add');
+  const [message, setMessage] = useState(null);
+  const [confirmClear, setConfirmClear] = useState(false);
+
+  const spacesLeft = MAX_CONTACTS - contacts.length;
+
+  const doUpload = () => {
+    const { contacts: parsed, skipped } = parseContactLines(pasteText);
+    if (parsed.length === 0) {
+      setMessage({ tone: 'warn', text: 'No contacts found. Check there is one person per line, with a name on each line.' });
+      return;
+    }
+    const base = mode === 'replace' ? [] : contacts;
+    const room = MAX_CONTACTS - base.length;
+    const toAdd = parsed.slice(0, Math.max(room, 0));
+    const leftOver = parsed.length - toAdd.length;
+    onChange([...base, ...toAdd]);
+
+    const bits = [`${mode === 'replace' ? 'Replaced the list with' : 'Added'} ${toAdd.length} contact${toAdd.length === 1 ? '' : 's'}.`];
+    if (leftOver > 0) bits.push(`${leftOver} not added because the list is limited to ${MAX_CONTACTS}.`);
+    if (skipped.length > 0) bits.push(`${skipped.length} line${skipped.length === 1 ? '' : 's'} skipped (no name found): ${skipped.slice(0, 3).join(' | ')}${skipped.length > 3 ? ' …' : ''}`);
+    setMessage({ tone: leftOver || skipped.length ? 'warn' : 'ok', text: bits.join(' ') });
+    if (!leftOver && !skipped.length) setPasteText('');
+  };
+
+  const updateOne = (id, field, value) => {
+    onChange(contacts.map(c => c.id === id ? { ...c, [field]: value } : c));
+  };
+  const removeOne = (id) => onChange(contacts.filter(c => c.id !== id));
+  const addOne = () => { if (spacesLeft > 0) onChange([...contacts, blankContact()]); };
+  const move = (idx, dir) => {
+    const to = idx + dir;
+    if (to < 0 || to >= contacts.length) return;
+    const next = contacts.slice();
+    [next[idx], next[to]] = [next[to], next[idx]];
+    onChange(next);
+  };
+
+  const cell = (c, field, placeholder, type = 'text') => (
+    <input
+      type={type}
+      value={c[field]}
+      onChange={e => updateOne(c.id, field, e.target.value)}
+      placeholder={placeholder}
+      className="w-full border rounded-md px-2 py-1 text-sm"
+      style={{ borderColor: PALETTE.creamDark }}
+    />
+  );
+
+  return (
+    <div className="space-y-6">
+      <p className="text-sm text-gray-600">
+        This list is shown on the <strong>Team leaders</strong> page, underneath the sign-in box, so anyone visiting the site can look people up without a password.
+      </p>
+
+      {/* Block upload */}
+      <div className="rounded-xl border p-4" style={{ borderColor: PALETTE.creamDark, backgroundColor: '#fff' }}>
+        <h3 className="font-bold mb-2 flex items-center gap-2" style={{ color: PALETTE.green }}>
+          <Upload size={16} /> Block upload
+        </h3>
+        <p className="text-sm text-gray-600 mb-2">
+          Paste one person per line. You can copy rows straight from an Excel or Word table, or type them with commas, in this order:
+        </p>
+        <p className="text-sm font-mono rounded-md px-2 py-1.5 mb-1" style={{ backgroundColor: PALETTE.cream }}>
+          Team or role, Name, Telephone, Email
+        </p>
+        <p className="text-xs text-gray-500 mb-3">
+          Example: <span className="font-mono">Hatfield A, John Smith, 07700 900123, john@example.com</span><br />
+          The team/role can be left off (<span className="font-mono">John Smith, 07700 900123, john@example.com</span>). A heading row is ignored.
+        </p>
+        <textarea
+          value={pasteText}
+          onChange={e => setPasteText(e.target.value)}
+          rows={8}
+          className="w-full border rounded-md px-3 py-2 text-sm font-mono"
+          style={{ borderColor: PALETTE.creamDark }}
+          placeholder={'Secretary, Mary Jones, 01707 123456, mary@example.com\nHatfield A, John Smith, 07700 900123, john@example.com'}
+        />
+        <div className="flex flex-wrap items-center gap-4 mt-2">
+          <label className="flex items-center gap-1.5 text-sm">
+            <input type="radio" name="contact-mode" checked={mode === 'add'} onChange={() => setMode('add')} />
+            Add to the current list
+          </label>
+          <label className="flex items-center gap-1.5 text-sm">
+            <input type="radio" name="contact-mode" checked={mode === 'replace'} onChange={() => setMode('replace')} />
+            Replace the whole list
+          </label>
+          <button
+            onClick={doUpload}
+            disabled={!pasteText.trim()}
+            className="rounded-md px-3 py-1.5 text-sm font-semibold disabled:opacity-50"
+            style={{ backgroundColor: PALETTE.green, color: '#fff' }}
+          >
+            Upload
+          </button>
+        </div>
+        {message && (
+          <p className="text-sm mt-3 rounded-md p-2" style={{
+            backgroundColor: message.tone === 'ok' ? '#EAF3EC' : '#FBEFE9',
+            color: message.tone === 'ok' ? PALETTE.green : PALETTE.maroon,
+          }}>
+            {message.text}
+          </p>
+        )}
+      </div>
+
+      {/* Editable table */}
+      <div className="rounded-xl border p-4" style={{ borderColor: PALETTE.creamDark, backgroundColor: '#fff' }}>
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+          <h3 className="font-bold flex items-center gap-2" style={{ color: PALETTE.green }}>
+            <BookUser size={16} /> Contacts list
+          </h3>
+          <Pill tone={spacesLeft === 0 ? 'maroon' : 'gold'}>{contacts.length} of {MAX_CONTACTS} spaces used</Pill>
+        </div>
+
+        {contacts.length === 0 ? (
+          <p className="text-sm text-gray-500 py-2">No contacts yet. Use Block upload above, or add people one at a time below.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm min-w-[720px]">
+              <thead>
+                <tr className="text-left text-xs text-gray-500">
+                  <th className="py-1 pr-2 w-8">#</th>
+                  <th className="py-1 pr-2">Team / role</th>
+                  <th className="py-1 pr-2">Name</th>
+                  <th className="py-1 pr-2">Telephone</th>
+                  <th className="py-1 pr-2">Email</th>
+                  <th className="py-1 w-24"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {contacts.map((c, idx) => (
+                  <tr key={c.id} className="border-t" style={{ borderColor: PALETTE.creamDark }}>
+                    <td className="py-1.5 pr-2 text-xs" style={{ color: PALETTE.gold }}>{idx + 1}</td>
+                    <td className="py-1.5 pr-2">{cell(c, 'role', 'e.g. Hatfield A')}</td>
+                    <td className="py-1.5 pr-2">{cell(c, 'name', 'Name')}</td>
+                    <td className="py-1.5 pr-2">{cell(c, 'phone', 'Telephone', 'tel')}</td>
+                    <td className="py-1.5 pr-2">{cell(c, 'email', 'Email', 'email')}</td>
+                    <td className="py-1.5 whitespace-nowrap text-right">
+                      <button onClick={() => move(idx, -1)} disabled={idx === 0} title="Move up" className="p-1 disabled:opacity-30"><ChevronUp size={15} /></button>
+                      <button onClick={() => move(idx, 1)} disabled={idx === contacts.length - 1} title="Move down" className="p-1 disabled:opacity-30"><ChevronDown size={15} /></button>
+                      <button onClick={() => removeOne(c.id)} title="Remove" className="p-1" style={{ color: PALETTE.maroon }}><Trash2 size={15} /></button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center gap-3 mt-3">
+          <button
+            onClick={addOne}
+            disabled={spacesLeft === 0}
+            className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-semibold disabled:opacity-50"
+            style={{ backgroundColor: PALETTE.maroon, color: PALETTE.cream }}
+          >
+            <Plus size={14} /> Add a contact
+          </button>
+          {spacesLeft === 0 && <span className="text-xs" style={{ color: PALETTE.maroon }}>The list is full ({MAX_CONTACTS}). Remove someone to add another.</span>}
+          {contacts.length > 0 && !confirmClear && (
+            <button onClick={() => setConfirmClear(true)} className="text-sm font-semibold ml-auto" style={{ color: PALETTE.maroon }}>
+              Clear whole list…
+            </button>
+          )}
+          {confirmClear && (
+            <span className="flex flex-wrap items-center gap-2 ml-auto">
+              <span className="text-sm font-semibold" style={{ color: PALETTE.maroon }}>Delete all {contacts.length} contacts?</span>
+              <button onClick={() => { onChange([]); setConfirmClear(false); }} className="rounded-md px-3 py-1 text-sm font-semibold" style={{ backgroundColor: PALETTE.maroon, color: '#fff' }}>Yes, clear</button>
+              <button onClick={() => setConfirmClear(false)} className="rounded-md px-3 py-1 text-sm font-semibold border" style={{ borderColor: PALETTE.creamDark }}>Cancel</button>
+            </span>
+          )}
+        </div>
+        <p className="text-xs text-gray-500 mt-2">Changes save automatically.</p>
+      </div>
     </div>
   );
 }
@@ -669,7 +1007,7 @@ function AdminSettings({ data, onToggleLock, onBackup, onReset, statusMsg }) {
         </h3>
         <p className="text-sm mb-3" style={{ color: PALETTE.ink }}>
           This clears every fixture, date and score in all three divisions, and renames every team back to "Team 1", "Team 2"
-          and so on. Division sizes are kept. This cannot be undone — take a backup first.
+          and so on. Division sizes and the contacts list are kept. This cannot be undone — take a backup first.
         </p>
         {confirmStep === 0 && (
           <button onClick={startReset} className="rounded-md px-3 py-1.5 text-sm font-semibold" style={{ backgroundColor: PALETTE.maroon, color: '#fff' }}>
@@ -743,6 +1081,7 @@ function AdminPage({ data, setData, onExit, updateFixture }) {
   const TABS = [
     { id: 'setup', label: 'Divisions & teams', icon: Users },
     { id: 'results', label: 'Enter results', icon: ClipboardList },
+    { id: 'contacts', label: 'Contacts', icon: BookUser },
     { id: 'settings', label: 'Lock & backup', icon: Settings2 },
   ];
 
@@ -780,6 +1119,10 @@ function AdminPage({ data, setData, onExit, updateFixture }) {
 
       {tab === 'results' && (
         <ResultsEntry divisions={data.divisions} resultsLocked={data.resultsLocked} onUpdateFixture={updateFixture} />
+      )}
+
+      {tab === 'contacts' && (
+        <ContactsAdmin contacts={data.contacts || []} onChange={contacts => setData(d => ({ ...d, contacts }))} />
       )}
 
       {tab === 'settings' && (
@@ -864,7 +1207,6 @@ export default function App() {
               >
                 Welwyn Hatfield Bowls League
               </h1>
-              <p className="text-xs sm:text-sm" style={{ color: PALETTE.gold }}>Round robin league tables</p>
             </div>
           </div>
           <nav className="flex gap-2">
@@ -914,12 +1256,19 @@ export default function App() {
         {data && page === 'scores' && (
           teamAuthed
             ? <TeamLeaderPage data={data} resultsLocked={data.resultsLocked} onUpdateFixture={updateFixture} />
-            : <PasswordGate
-                onSuccess={() => setTeamAuthed(true)}
-                password={TEAM_PASSWORD}
-                title="Team leader sign-in"
-                helpText="Share this password with team leaders so they can enter their own rink scores and match dates. It doesn't allow access to team setup, locking or backups."
-              />
+            : <>
+                <PasswordGate
+                  onSuccess={() => setTeamAuthed(true)}
+                  password={TEAM_PASSWORD}
+                  title="Team leader sign-in"
+                  helpText="Share this password with team leaders so they can enter their own rink scores and match dates. It doesn't allow access to team setup, locking or backups."
+                />
+                {(data.contacts || []).length > 0 && (
+                  <div className="mt-10">
+                    <ContactsDirectory contacts={data.contacts} title="Team leaders & committee contacts" />
+                  </div>
+                )}
+              </>
         )}
         {data && page === 'admin' && (
           authed
