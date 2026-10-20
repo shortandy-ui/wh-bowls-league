@@ -51,12 +51,13 @@ function newContactId() {
 }
 
 function blankContact() {
-  return { id: newContactId(), role: '', name: '', phone: '', email: '' };
+  return { id: newContactId(), role: '', name: '', club: '', phone: '', email: '' };
 }
 
 // Reads pasted lines. Each line can be separated by commas, or by tabs
 // (which is what you get when copying rows out of Excel or Word tables).
-// Order: Role/Team (optional), Name, Telephone, Email.
+// Order: Team/role (optional), Name, Club, Email, Telephone.
+// One text item = name; two = name + club; three or more = team/role, name, club.
 // Email is spotted by the "@" and the phone by its digits, so those two
 // can be in any position or left out.
 function parseContactLines(text) {
@@ -84,10 +85,12 @@ function parseContactLines(text) {
     });
     let role = '';
     let name = '';
+    let club = '';
     if (words.length === 1) name = words[0];
-    else if (words.length >= 2) { role = words[0]; name = words.slice(1).join(', '); }
+    else if (words.length === 2) { name = words[0]; club = words[1]; }
+    else if (words.length >= 3) { role = words[0]; name = words[1]; club = words.slice(2).join(', '); }
     if (!name) { skipped.push(line); return; }
-    contacts.push({ id: newContactId(), role, name, phone, email });
+    contacts.push({ id: newContactId(), role, name, club, phone, email });
   });
   return { contacts, skipped };
 }
@@ -476,7 +479,7 @@ function ContactsDirectory({ contacts, title }) {
   const [query, setQuery] = useState('');
   const q = query.trim().toLowerCase();
   const list = contacts.filter(c =>
-    !q || [c.role, c.name, c.phone, c.email].some(v => (v || '').toLowerCase().includes(q))
+    !q || [c.role, c.name, c.club, c.phone, c.email].some(v => (v || '').toLowerCase().includes(q))
   );
 
   if (contacts.length === 0) {
@@ -502,20 +505,21 @@ function ContactsDirectory({ contacts, title }) {
         <input
           value={query}
           onChange={e => setQuery(e.target.value)}
-          placeholder="Search by name, team or role…"
+          placeholder="Search by name, club, team or role…"
           className="flex-1 text-sm focus:outline-none"
         />
         {query && <button onClick={() => setQuery('')}><X size={14} className="text-gray-400" /></button>}
       </div>
 
       <div className="overflow-x-auto rounded-lg border" style={{ borderColor: PALETTE.creamDark }}>
-        <table className="w-full text-sm min-w-[600px]">
+        <table className="w-full text-sm min-w-[720px]">
           <thead>
             <tr style={{ backgroundColor: PALETTE.green, color: PALETTE.cream }}>
               <th className="text-left font-semibold py-2 pl-3 pr-2">Team / role</th>
               <th className="text-left font-semibold py-2 px-2">Name</th>
-              <th className="text-left font-semibold py-2 px-2">Telephone</th>
-              <th className="text-left font-semibold py-2 pr-3 pl-2">Email</th>
+              <th className="text-left font-semibold py-2 px-2">Club</th>
+              <th className="text-left font-semibold py-2 px-2">Email</th>
+              <th className="text-left font-semibold py-2 pr-3 pl-2">Telephone</th>
             </tr>
           </thead>
           <tbody>
@@ -527,16 +531,13 @@ function ContactsDirectory({ contacts, title }) {
               >
                 <td className="py-2 pl-3 pr-2" style={{ color: PALETTE.green }}>{c.role || '—'}</td>
                 <td className="py-2 px-2 font-semibold" style={{ color: PALETTE.ink }}>{c.name}</td>
-                <td className="py-2 px-2 whitespace-nowrap">
-                  {c.phone || '—'}
-                </td>
-                <td className="py-2 pr-3 pl-2 break-all">
-                  {c.email || '—'}
-                </td>
+                <td className="py-2 px-2">{c.club || '—'}</td>
+                <td className="py-2 px-2 break-all">{c.email || '—'}</td>
+                <td className="py-2 pr-3 pl-2 whitespace-nowrap">{c.phone || '—'}</td>
               </tr>
             ))}
             {list.length === 0 && (
-              <tr><td colSpan={4} className="text-center py-6 text-gray-500">No contacts match your search.</td></tr>
+              <tr><td colSpan={5} className="text-center py-6 text-gray-500">No contacts match your search.</td></tr>
             )}
           </tbody>
         </table>
@@ -590,7 +591,7 @@ function ContactsAdmin({ contacts, onChange }) {
   const cell = (c, field, placeholder, type = 'text') => (
     <input
       type={type}
-      value={c[field]}
+      value={c[field] || ''}
       onChange={e => updateOne(c.id, field, e.target.value)}
       placeholder={placeholder}
       className="w-full border rounded-md px-2 py-1 text-sm"
@@ -613,11 +614,12 @@ function ContactsAdmin({ contacts, onChange }) {
           Paste one person per line. You can copy rows straight from an Excel or Word table, or type them with commas, in this order:
         </p>
         <p className="text-sm font-mono rounded-md px-2 py-1.5 mb-1" style={{ backgroundColor: PALETTE.cream }}>
-          Team or role, Name, Telephone, Email
+          Team or role, Name, Club, Email, Telephone
         </p>
         <p className="text-xs text-gray-500 mb-3">
-          Example: <span className="font-mono">Hatfield A, John Smith, 07700 900123, john@example.com</span><br />
-          The team/role can be left off (<span className="font-mono">John Smith, 07700 900123, john@example.com</span>). A heading row is ignored.
+          Example: <span className="font-mono">Team leader, John Smith, Hatfield, john@example.com, 07700 900123</span><br />
+          The team/role can be left off (<span className="font-mono">John Smith, Hatfield, john@example.com, 07700 900123</span>). A heading row is ignored.<br />
+          With only two words besides the email and phone, they are read as Name then Club.
         </p>
         <textarea
           value={pasteText}
@@ -625,7 +627,7 @@ function ContactsAdmin({ contacts, onChange }) {
           rows={8}
           className="w-full border rounded-md px-3 py-2 text-sm font-mono"
           style={{ borderColor: PALETTE.creamDark }}
-          placeholder={'Secretary, Mary Jones, 01707 123456, mary@example.com\nHatfield A, John Smith, 07700 900123, john@example.com'}
+          placeholder={'Secretary, Mary Jones, Welwyn, mary@example.com, 01707 123456\nTeam leader, John Smith, Hatfield, john@example.com, 07700 900123'}
         />
         <div className="flex flex-wrap items-center gap-4 mt-2">
           <label className="flex items-center gap-1.5 text-sm">
@@ -668,14 +670,15 @@ function ContactsAdmin({ contacts, onChange }) {
           <p className="text-sm text-gray-500 py-2">No contacts yet. Use Block upload above, or add people one at a time below.</p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm min-w-[720px]">
+            <table className="w-full text-sm min-w-[880px]">
               <thead>
                 <tr className="text-left text-xs text-gray-500">
                   <th className="py-1 pr-2 w-8">#</th>
                   <th className="py-1 pr-2">Team / role</th>
                   <th className="py-1 pr-2">Name</th>
-                  <th className="py-1 pr-2">Telephone</th>
+                  <th className="py-1 pr-2">Club</th>
                   <th className="py-1 pr-2">Email</th>
+                  <th className="py-1 pr-2">Telephone</th>
                   <th className="py-1 w-24"></th>
                 </tr>
               </thead>
@@ -685,8 +688,9 @@ function ContactsAdmin({ contacts, onChange }) {
                     <td className="py-1.5 pr-2 text-xs" style={{ color: PALETTE.gold }}>{idx + 1}</td>
                     <td className="py-1.5 pr-2">{cell(c, 'role', 'e.g. Hatfield A')}</td>
                     <td className="py-1.5 pr-2">{cell(c, 'name', 'Name')}</td>
-                    <td className="py-1.5 pr-2">{cell(c, 'phone', 'Telephone', 'tel')}</td>
+                    <td className="py-1.5 pr-2">{cell(c, 'club', 'Club')}</td>
                     <td className="py-1.5 pr-2">{cell(c, 'email', 'Email', 'email')}</td>
+                    <td className="py-1.5 pr-2">{cell(c, 'phone', 'Telephone', 'tel')}</td>
                     <td className="py-1.5 whitespace-nowrap text-right">
                       <button onClick={() => move(idx, -1)} disabled={idx === 0} title="Move up" className="p-1 disabled:opacity-30"><ChevronUp size={15} /></button>
                       <button onClick={() => move(idx, 1)} disabled={idx === contacts.length - 1} title="Move down" className="p-1 disabled:opacity-30"><ChevronDown size={15} /></button>
