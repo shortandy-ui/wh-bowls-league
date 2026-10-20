@@ -953,7 +953,80 @@ function ResultsEntry({ divisions, resultsLocked, onUpdateFixture }) {
 
 /* ---------------- Admin: settings ---------------- */
 
-function AdminSettings({ data, onToggleLock, onBackup, onReset, statusMsg }) {
+function TeamPasswordSettings({ current, onSave }) {
+  const [show, setShow] = useState(false);
+  const [pw1, setPw1] = useState('');
+  const [pw2, setPw2] = useState('');
+  const [msg, setMsg] = useState(null);
+
+  const save = () => {
+    const a = pw1.trim();
+    if (a.length < 4) { setMsg({ ok: false, text: 'The new password must be at least 4 characters.' }); return; }
+    if (a !== pw2.trim()) { setMsg({ ok: false, text: 'The two passwords do not match. Please type them again.' }); return; }
+    if (a === current) { setMsg({ ok: false, text: 'That is already the team leader password.' }); return; }
+    onSave(a);
+    setPw1(''); setPw2('');
+    setMsg({ ok: true, text: 'Team leader password changed. Remember to tell the team leaders the new password.' });
+  };
+
+  return (
+    <div className="rounded-xl border p-4" style={{ borderColor: PALETTE.creamDark, backgroundColor: '#fff' }}>
+      <h3 className="font-bold mb-2 flex items-center gap-2" style={{ color: PALETTE.green }}>
+        <ShieldCheck size={16} /> Team leader password
+      </h3>
+      <p className="text-sm text-gray-600 mb-3">
+        Current password:{' '}
+        <strong className="font-mono">{show ? current : '•'.repeat(current.length)}</strong>
+        <button onClick={() => setShow(v => !v)} className="ml-2 text-xs font-semibold underline" style={{ color: PALETTE.green }}>
+          {show ? 'Hide' : 'Show'}
+        </button>
+      </p>
+      <div className="grid sm:grid-cols-2 gap-2 max-w-lg">
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">New password</label>
+          <input
+            type="text"
+            value={pw1}
+            onChange={e => { setPw1(e.target.value); setMsg(null); }}
+            className="w-full border rounded-md px-2 py-1.5 text-sm"
+            style={{ borderColor: PALETTE.creamDark }}
+            autoComplete="off"
+          />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">Type it again</label>
+          <input
+            type="text"
+            value={pw2}
+            onChange={e => { setPw2(e.target.value); setMsg(null); }}
+            onKeyDown={e => { if (e.key === 'Enter') save(); }}
+            className="w-full border rounded-md px-2 py-1.5 text-sm"
+            style={{ borderColor: PALETTE.creamDark }}
+            autoComplete="off"
+          />
+        </div>
+      </div>
+      <button
+        onClick={save}
+        disabled={!pw1 || !pw2}
+        className="rounded-md px-3 py-1.5 text-sm font-semibold mt-3 disabled:opacity-50"
+        style={{ backgroundColor: PALETTE.green, color: '#fff' }}
+      >
+        Change password
+      </button>
+      {msg && (
+        <p className="text-sm mt-3 rounded-md p-2" style={{
+          backgroundColor: msg.ok ? '#EAF3EC' : '#FBEFE9',
+          color: msg.ok ? PALETTE.green : PALETTE.maroon,
+        }}>
+          {msg.text}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function AdminSettings({ data, onToggleLock, onBackup, onReset, statusMsg, onChangeTeamPassword }) {
   const [confirmStep, setConfirmStep] = useState(0);
 
   const startReset = () => setConfirmStep(1);
@@ -977,6 +1050,8 @@ function AdminSettings({ data, onToggleLock, onBackup, onReset, statusMsg }) {
           {data.resultsLocked ? 'Unlock results' : 'Lock results'}
         </button>
       </div>
+
+      <TeamPasswordSettings current={data.teamPassword || TEAM_PASSWORD} onSave={onChangeTeamPassword} />
 
       <div className="rounded-xl border p-4" style={{ borderColor: PALETTE.creamDark, backgroundColor: '#fff' }}>
         <h3 className="font-bold mb-2 flex items-center gap-2" style={{ color: PALETTE.green }}>
@@ -1002,7 +1077,7 @@ function AdminSettings({ data, onToggleLock, onBackup, onReset, statusMsg }) {
         </h3>
         <p className="text-sm mb-3" style={{ color: PALETTE.ink }}>
           This clears every fixture, date and score in all three divisions, and renames every team back to "Team 1", "Team 2"
-          and so on. Division sizes and the contacts list are kept. This cannot be undone — take a backup first.
+          and so on. Division sizes, the contacts list and the team leader password are kept. This cannot be undone — take a backup first.
         </p>
         {confirmStep === 0 && (
           <button onClick={startReset} className="rounded-md px-3 py-1.5 text-sm font-semibold" style={{ backgroundColor: PALETTE.maroon, color: '#fff' }}>
@@ -1077,7 +1152,7 @@ function AdminPage({ data, setData, onExit, updateFixture }) {
     { id: 'setup', label: 'Divisions & teams', icon: Users },
     { id: 'results', label: 'Enter results', icon: ClipboardList },
     { id: 'contacts', label: 'Contacts', icon: BookUser },
-    { id: 'settings', label: 'Lock & backup', icon: Settings2 },
+    { id: 'settings', label: 'Settings', icon: Settings2 },
   ];
 
   return (
@@ -1121,7 +1196,14 @@ function AdminPage({ data, setData, onExit, updateFixture }) {
       )}
 
       {tab === 'settings' && (
-        <AdminSettings data={data} onToggleLock={toggleLock} onBackup={backupNow} onReset={resetForNewYear} statusMsg={statusMsg} />
+        <AdminSettings
+          data={data}
+          onToggleLock={toggleLock}
+          onBackup={backupNow}
+          onReset={resetForNewYear}
+          statusMsg={statusMsg}
+          onChangeTeamPassword={pw => setData(d => ({ ...d, teamPassword: pw }))}
+        />
       )}
     </div>
   );
@@ -1254,7 +1336,7 @@ export default function App() {
             : <>
                 <PasswordGate
                   onSuccess={() => setTeamAuthed(true)}
-                  password={TEAM_PASSWORD}
+                  password={data.teamPassword || TEAM_PASSWORD}
                   title="Team leader sign-in"
                   helpText="Share this password with team leaders so they can enter their own rink scores and match dates. It doesn't allow access to team setup, locking or backups."
                 />
