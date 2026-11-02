@@ -6,8 +6,7 @@ import {
   Upload, Plus, Trash2, BookUser
 } from 'lucide-react';
 
-const ADMIN_PASSWORD = 'fish';
-const TEAM_PASSWORD = 'chips';
+// Passwords are checked by the server (stored scrambled there) — never written in this file.
 const SIZES = [7, 8, 9, 10];
 const MAX_CONTACTS = 32;
 
@@ -175,43 +174,43 @@ function computeStandings(teams, fixtures) {
 
 const API_BASE = '/api';
 
+// → { data, version }. Throws if the league can't be loaded (so a blip never looks like an empty league).
 async function loadData() {
-  try {
-    const res = await fetch(`${API_BASE}/league`);
-    if (!res.ok) return null;
-    const parsed = await res.json();
-    return parsed;
-  } catch (e) {
-    console.error('load failed', e);
-    return null;
-  }
+  const res = await fetch(`${API_BASE}/league`, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`load failed (${res.status})`);
+  return res.json();
 }
 
-async function saveData(data) {
+// → { status, body }
+async function putData(data, baseVersion, auth) {
   try {
     const res = await fetch(`${API_BASE}/league`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
+      body: JSON.stringify({ data, baseVersion, auth }),
     });
-    return res.ok;
+    return { status: res.status, body: await res.json().catch(() => ({})) };
   } catch (e) {
-    console.error('save failed', e);
-    return false;
+    return { status: 0, body: {} };
   }
 }
 
-async function createServerBackup(data) {
+async function postJson(path, body) {
   try {
-    await fetch(`${API_BASE}/backup`, {
+    const res = await fetch(`${API_BASE}/${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
+      body: JSON.stringify(body),
     });
+    return { ok: res.ok, status: res.status, ...(await res.json().catch(() => ({}))) };
   } catch (e) {
-    console.error('backup failed', e);
+    return { ok: false, status: 0, error: "Can't reach the server — check your connection." };
   }
 }
+
+const login = (auth) => postJson('auth', { action: 'login', auth });
+const changePassword = (auth, target, newPassword) => postJson('auth', { action: 'setPassword', auth, target, newPassword });
+const backupAction = (auth, body) => postJson('backup', { ...body, auth });
 
 /* ---------------- small UI atoms ---------------- */
 
@@ -392,12 +391,18 @@ function PublicPage({ data }) {
 
 /* ---------------- Admin: password gate ---------------- */
 
-function PasswordGate({ onSuccess, password, title, helpText }) {
+function PasswordGate({ onSuccess, role, title, helpText }) {
   const [pw, setPw] = useState('');
   const [error, setError] = useState('');
-  const submit = () => {
-    if (pw === password) { setError(''); onSuccess(); }
-    else setError('Incorrect password. Please try again.');
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    if (!pw || busy) return;
+    setBusy(true);
+    const auth = { role, password: pw };
+    const r = await login(auth);
+    setBusy(false);
+    if (r.ok) { setError(''); onSuccess(auth); }
+    else setError(r.status === 401 ? 'Incorrect password. Please try again.' : (r.error || 'Could not sign in — please try again.'));
   };
   return (
     <div className="max-w-sm mx-auto mt-16 rounded-xl p-6 border" style={{ borderColor: PALETTE.creamDark, backgroundColor: '#fff' }}>
@@ -422,7 +427,7 @@ function PasswordGate({ onSuccess, password, title, helpText }) {
         className="w-full rounded-md py-2 text-sm font-semibold mt-2"
         style={{ backgroundColor: PALETTE.green, color: PALETTE.cream }}
       >
-        Sign in
+        {busy ? 'Checking…' : 'Sign in'}
       </button>
       <p className="text-xs text-gray-500 mt-3">{helpText}</p>
     </div>
@@ -745,8 +750,15 @@ function DivisionSetup({ division, onChange, onGenerate }) {
     onChange({ ...division, teams, fixtures });
   };
 
+  const dupes = division.teams.filter((t, i) => t.trim() && division.teams.findIndex(x => x.trim().toLowerCase() === t.trim().toLowerCase()) !== i);
+
   return (
     <div className="rounded-xl border p-4 mb-5" style={{ borderColor: PALETTE.creamDark, backgroundColor: '#fff' }}>
+      {dupes.length > 0 && (
+        <p className="text-sm mb-3 rounded-md p-2" style={{ backgroundColor: '#FBEFE9', color: PALETTE.maroon }}>
+          Two teams have the same name ({[...new Set(dupes)].join(', ')}). Give every team a different name, or the table won't add up.
+        </p>
+      )}
       <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
         <div className="flex items-center gap-2">
           <input
@@ -953,34 +965,29 @@ function ResultsEntry({ divisions, resultsLocked, onUpdateFixture }) {
 
 /* ---------------- Admin: settings ---------------- */
 
-function TeamPasswordSettings({ current, onSave }) {
-  const [show, setShow] = useState(false);
+function PasswordSettings({ title, intro, onSave, doneText }) {
   const [pw1, setPw1] = useState('');
   const [pw2, setPw2] = useState('');
   const [msg, setMsg] = useState(null);
+  const [busy, setBusy] = useState(false);
 
-  const save = () => {
+  const save = async () => {
     const a = pw1.trim();
     if (a.length < 4) { setMsg({ ok: false, text: 'The new password must be at least 4 characters.' }); return; }
     if (a !== pw2.trim()) { setMsg({ ok: false, text: 'The two passwords do not match. Please type them again.' }); return; }
-    if (a === current) { setMsg({ ok: false, text: 'That is already the team leader password.' }); return; }
-    onSave(a);
-    setPw1(''); setPw2('');
-    setMsg({ ok: true, text: 'Team leader password changed. Remember to tell the team leaders the new password.' });
+    setBusy(true);
+    const ok = await onSave(a);
+    setBusy(false);
+    if (ok) { setPw1(''); setPw2(''); setMsg({ ok: true, text: doneText }); }
+    else setMsg({ ok: false, text: 'Could not change the password — please try again.' });
   };
 
   return (
     <div className="rounded-xl border p-4" style={{ borderColor: PALETTE.creamDark, backgroundColor: '#fff' }}>
       <h3 className="font-bold mb-2 flex items-center gap-2" style={{ color: PALETTE.green }}>
-        <ShieldCheck size={16} /> Team leader password
+        <ShieldCheck size={16} /> {title}
       </h3>
-      <p className="text-sm text-gray-600 mb-3">
-        Current password:{' '}
-        <strong className="font-mono">{show ? current : '•'.repeat(current.length)}</strong>
-        <button onClick={() => setShow(v => !v)} className="ml-2 text-xs font-semibold underline" style={{ color: PALETTE.green }}>
-          {show ? 'Hide' : 'Show'}
-        </button>
-      </p>
+      <p className="text-sm text-gray-600 mb-3">{intro}</p>
       <div className="grid sm:grid-cols-2 gap-2 max-w-lg">
         <div>
           <label className="block text-xs text-gray-500 mb-1">New password</label>
@@ -1008,11 +1015,11 @@ function TeamPasswordSettings({ current, onSave }) {
       </div>
       <button
         onClick={save}
-        disabled={!pw1 || !pw2}
+        disabled={!pw1 || !pw2 || busy}
         className="rounded-md px-3 py-1.5 text-sm font-semibold mt-3 disabled:opacity-50"
         style={{ backgroundColor: PALETTE.green, color: '#fff' }}
       >
-        Change password
+        {busy ? 'Saving…' : 'Change password'}
       </button>
       {msg && (
         <p className="text-sm mt-3 rounded-md p-2" style={{
@@ -1026,7 +1033,113 @@ function TeamPasswordSettings({ current, onSave }) {
   );
 }
 
-function AdminSettings({ data, onToggleLock, onBackup, onReset, statusMsg, onChangeTeamPassword }) {
+function BackupsPanel({ data, auth, onBackup, onRestored, statusMsg }) {
+  const [list, setList] = useState(null);
+  const [restoring, setRestoring] = useState(null);
+  const [confirmText, setConfirmText] = useState('');
+  const [msg, setMsg] = useState(null);
+
+  const refresh = useCallback(async () => {
+    const r = await backupAction(auth, { action: 'list' });
+    setList(r.ok ? r.backups : []);
+  }, [auth]);
+
+  useEffect(() => { refresh(); }, [refresh, statusMsg]);
+
+  const label = (name) => {
+    const m = name.match(/backup-(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})/);
+    const when = m ? new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:00Z`).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }) : name;
+    return `${when}${name.includes('-weekly') ? ' (weekly)' : ''}`;
+  };
+
+  const restore = async () => {
+    const r = await backupAction(auth, { action: 'restore', name: restoring, confirm: confirmText });
+    if (r.ok) {
+      setMsg({ ok: true, text: 'Backup restored. The league is now as it was at that time.' });
+      setRestoring(null); setConfirmText('');
+      onRestored(r.data, r.version);
+    } else setMsg({ ok: false, text: r.error || 'Could not restore that backup.' });
+  };
+
+  return (
+    <div className="rounded-xl border p-4" style={{ borderColor: PALETTE.creamDark, backgroundColor: '#fff' }}>
+      <h3 className="font-bold mb-2 flex items-center gap-2" style={{ color: PALETTE.green }}>
+        <Download size={16} /> Backups
+      </h3>
+      <p className="text-sm text-gray-600 mb-1">
+        Last backup: <strong>{data.lastBackup ? new Date(data.lastBackup).toLocaleString() : 'never'}</strong>
+      </p>
+      <p className="text-sm text-gray-600 mb-3">
+        Take a backup before big changes. It keeps a copy on the server (the newest 5 are kept) and downloads one to your device.
+      </p>
+      <button
+        onClick={onBackup}
+        className="rounded-md px-3 py-1.5 text-sm font-semibold"
+        style={{ backgroundColor: PALETTE.green, color: '#fff' }}
+      >
+        Create backup now
+      </button>
+      {statusMsg && <span className="ml-3 text-sm inline-flex items-center gap-1" style={{ color: PALETTE.green }}><Check size={14} /> {statusMsg}</span>}
+
+      <div className="mt-4">
+        <div className="text-sm font-semibold mb-1" style={{ color: PALETTE.ink }}>Backups on the server</div>
+        {list === null && <p className="text-sm text-gray-500">Loading…</p>}
+        {list && list.length === 0 && <p className="text-sm text-gray-500">None yet.</p>}
+        {list && list.length > 0 && (
+          <ul className="text-sm divide-y" style={{ borderColor: PALETTE.creamDark }}>
+            {list.map(b => (
+              <li key={b.name} className="py-1.5 flex items-center justify-between gap-2">
+                <span>{label(b.name)}</span>
+                <button
+                  onClick={() => { setRestoring(b.name); setConfirmText(''); setMsg(null); }}
+                  className="text-xs font-semibold underline"
+                  style={{ color: PALETTE.maroon }}
+                >
+                  Restore…
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {restoring && (
+          <div className="mt-3 rounded-md p-3" style={{ backgroundColor: '#FBEFE9' }}>
+            <p className="text-sm mb-2" style={{ color: PALETTE.maroon }}>
+              Restoring puts the whole league back to <strong>{label(restoring)}</strong>. Anything entered since then is lost
+              (take a backup first if unsure). Type RESTORE to confirm.
+            </p>
+            <div className="flex gap-2 flex-wrap">
+              <input
+                value={confirmText}
+                onChange={e => setConfirmText(e.target.value)}
+                placeholder="Type RESTORE"
+                className="border rounded-md px-2 py-1 text-sm"
+                style={{ borderColor: PALETTE.creamDark }}
+              />
+              <button
+                onClick={restore}
+                disabled={confirmText !== 'RESTORE'}
+                className="rounded-md px-3 py-1 text-sm font-semibold disabled:opacity-50"
+                style={{ backgroundColor: PALETTE.maroon, color: '#fff' }}
+              >
+                Restore this backup
+              </button>
+              <button onClick={() => setRestoring(null)} className="rounded-md px-3 py-1 text-sm font-semibold border" style={{ borderColor: PALETTE.creamDark }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+        {msg && (
+          <p className="text-sm mt-3 rounded-md p-2" style={{ backgroundColor: msg.ok ? '#EAF3EC' : '#FBEFE9', color: msg.ok ? PALETTE.green : PALETTE.maroon }}>
+            {msg.text}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AdminSettings({ data, auth, onToggleLock, onBackup, onRestored, onReset, statusMsg, onChangeTeamPassword, onChangeAdminPassword }) {
   const [confirmStep, setConfirmStep] = useState(0);
 
   const startReset = () => setConfirmStep(1);
@@ -1051,25 +1164,21 @@ function AdminSettings({ data, onToggleLock, onBackup, onReset, statusMsg, onCha
         </button>
       </div>
 
-      <TeamPasswordSettings current={data.teamPassword || TEAM_PASSWORD} onSave={onChangeTeamPassword} />
+      <PasswordSettings
+        title="Team leader password"
+        intro="Team leaders use this to enter scores and dates. Changing it signs everyone out — remember to tell the team leaders the new one."
+        onSave={onChangeTeamPassword}
+        doneText="Team leader password changed. Remember to tell the team leaders the new password."
+      />
 
-      <div className="rounded-xl border p-4" style={{ borderColor: PALETTE.creamDark, backgroundColor: '#fff' }}>
-        <h3 className="font-bold mb-2 flex items-center gap-2" style={{ color: PALETTE.green }}>
-          <Download size={16} /> Backups
-        </h3>
-        <p className="text-sm text-gray-600 mb-1">
-          Last backup: <strong>{data.lastBackup ? new Date(data.lastBackup).toLocaleString() : 'never'}</strong>
-        </p>
-        <p className="text-sm text-gray-600 mb-3">Take a backup regularly, and always before making big changes. It saves a snapshot and downloads a copy to your device.</p>
-        <button
-          onClick={onBackup}
-          className="rounded-md px-3 py-1.5 text-sm font-semibold"
-          style={{ backgroundColor: PALETTE.green, color: '#fff' }}
-        >
-          Create backup now
-        </button>
-        {statusMsg && <span className="ml-3 text-sm inline-flex items-center gap-1" style={{ color: PALETTE.green }}><Check size={14} /> {statusMsg}</span>}
-      </div>
+      <PasswordSettings
+        title="Admin password"
+        intro="The password for this admin area."
+        onSave={onChangeAdminPassword}
+        doneText="Admin password changed."
+      />
+
+      <BackupsPanel data={data} auth={auth} onBackup={onBackup} onRestored={onRestored} statusMsg={statusMsg} />
 
       <div className="rounded-xl border p-4" style={{ borderColor: PALETTE.maroon, backgroundColor: '#FBEFE9' }}>
         <h3 className="font-bold mb-2 flex items-center gap-2" style={{ color: PALETTE.maroon }}>
@@ -1077,7 +1186,7 @@ function AdminSettings({ data, onToggleLock, onBackup, onReset, statusMsg, onCha
         </h3>
         <p className="text-sm mb-3" style={{ color: PALETTE.ink }}>
           This clears every fixture, date and score in all three divisions, and renames every team back to "Team 1", "Team 2"
-          and so on. Division sizes, the contacts list and the team leader password are kept. This cannot be undone — take a backup first.
+          and so on. Division sizes, the contacts list and the passwords are kept. This cannot be undone — take a backup first.
         </p>
         {confirmStep === 0 && (
           <button onClick={startReset} className="rounded-md px-3 py-1.5 text-sm font-semibold" style={{ backgroundColor: PALETTE.maroon, color: '#fff' }}>
@@ -1098,26 +1207,33 @@ function AdminSettings({ data, onToggleLock, onBackup, onReset, statusMsg, onCha
 
 /* ---------------- Admin shell ---------------- */
 
-function AdminPage({ data, setData, onExit, updateFixture }) {
+function AdminPage({ data, setData, auth, setAuth, onExit, updateFixture, onRestored }) {
   const [tab, setTab] = useState('setup');
   const [statusMsg, setStatusMsg] = useState('');
 
   const flash = (msg) => { setStatusMsg(msg); setTimeout(() => setStatusMsg(''), 3000); };
 
+  // Keeps scores and dates from the latest copy of the league, so a team leader's
+  // result entered at the same moment isn't overwritten by the admin's edit.
   const updateDivision = (updated) => {
-    setData(d => ({ ...d, divisions: d.divisions.map(x => x.id === updated.id ? updated : x) }));
+    setData(d => ({
+      ...d,
+      divisions: d.divisions.map(x => {
+        if (x.id !== updated.id) return x;
+        const fixtures = updated.fixtures.map(f => {
+          const cur = x.fixtures.find(c => c.id === f.id);
+          return cur ? { ...cur, home: f.home, away: f.away } : f;
+        });
+        return { ...updated, fixtures };
+      }),
+    }));
   };
 
   const generateForDivision = (id) => {
-    setData(d => {
-      const div = d.divisions.find(x => x.id === id);
-      if (div.fixtures.length > 0) {
-        const ok = window.confirm('This will erase existing dates and scores for this division. Continue?');
-        if (!ok) return d;
-      }
-      const fixtures = generateFixtures(div.teams);
-      return { ...d, divisions: d.divisions.map(x => x.id === id ? { ...x, fixtures } : x) };
-    });
+    const div = data.divisions.find(x => x.id === id);
+    if (div.fixtures.length > 0 && !window.confirm('This will erase existing dates and scores for this division. Continue?')) return;
+    const fixtures = generateFixtures(div.teams);
+    setData(d => ({ ...d, divisions: d.divisions.map(x => x.id === id ? { ...x, fixtures } : x) }));
     flash('Fixtures generated');
   };
 
@@ -1125,7 +1241,8 @@ function AdminPage({ data, setData, onExit, updateFixture }) {
 
   const backupNow = async () => {
     const stamp = new Date().toISOString();
-    await createServerBackup(data);
+    const r = await backupAction(auth, { action: 'run' });
+    if (!r.ok) { flash('Backup failed on the server — your download below is still a copy'); }
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -1202,7 +1319,14 @@ function AdminPage({ data, setData, onExit, updateFixture }) {
           onBackup={backupNow}
           onReset={resetForNewYear}
           statusMsg={statusMsg}
-          onChangeTeamPassword={pw => setData(d => ({ ...d, teamPassword: pw }))}
+          auth={auth}
+          onRestored={onRestored}
+          onChangeTeamPassword={async pw => (await changePassword(auth, 'team', pw)).ok}
+          onChangeAdminPassword={async pw => {
+            const ok = (await changePassword(auth, 'admin', pw)).ok;
+            if (ok) setAuth({ role: 'admin', password: pw });
+            return ok;
+          }}
         />
       )}
     </div>
@@ -1214,48 +1338,120 @@ function AdminPage({ data, setData, onExit, updateFixture }) {
 export default function App() {
   const [data, setDataRaw] = useState(null);
   const [page, setPage] = useState('public');
-  const [authed, setAuthed] = useState(false);
-  const [teamAuthed, setTeamAuthed] = useState(false);
+  const [adminAuth, setAdminAuth] = useState(null);
+  const [teamAuth, setTeamAuth] = useState(null);
+  const authed = !!adminAuth;
+  const teamAuthed = !!teamAuth;
+  const [loadError, setLoadError] = useState(false);
+  const [syncMsg, setSyncMsg] = useState('');
   const editingRef = useRef(false);
-  const savingTimer = useRef(null);
+
+  // How saving works: `server` is the last copy of the league the server confirmed
+  // (with its version). Each change is kept as a small step ("put this score in")
+  // and sent on top of the latest server copy. If someone else saved in between,
+  // the server says so, and the steps are simply re-applied to their newer copy —
+  // so two people entering different results never wipe each other out.
+  const server = useRef({ data: null, version: null });
+  const pending = useRef([]);
+  const flushTimer = useRef(null);
+  const flushing = useRef(false);
+  const authRef = useRef(null);
+  authRef.current = adminAuth || teamAuth;
+
+  const applyPending = (base) => pending.current.reduce((d, step) => step(d), base);
+
+  const flush = useCallback(async () => {
+    if (flushing.current || pending.current.length === 0) return;
+    flushing.current = true;
+    try {
+      for (let attempt = 0; attempt < 4 && pending.current.length; attempt++) {
+        const steps = pending.current.slice();
+        const next = steps.reduce((d, step) => step(d), server.current.data);
+        const r = await putData(next, server.current.version, authRef.current);
+        if (r.status === 200) {
+          server.current = { data: next, version: r.body.version };
+          pending.current = pending.current.slice(steps.length);
+          setSyncMsg('');
+          continue;
+        }
+        if (r.status === 409) {
+          // Someone else saved first: build on their copy and try again.
+          server.current = { data: r.body.data, version: r.body.version };
+          setDataRaw(applyPending(r.body.data));
+          continue;
+        }
+        // Refused or failed: drop these changes and show the league as the server has it.
+        pending.current = [];
+        setDataRaw(server.current.data);
+        setSyncMsg(
+          r.status === 423 ? 'Results are locked — your change was not saved.'
+          : r.status === 403 ? 'Team leaders can only enter scores and dates — that change was not saved.'
+          : r.status === 401 ? 'The password has changed — please sign in again. Your change was not saved.'
+          : 'Could not save — check your connection. Your last change was not saved.'
+        );
+        if (r.status === 401) { setAdminAuth(null); setTeamAuth(null); }
+        break;
+      }
+    } finally {
+      flushing.current = false;
+      if (pending.current.length) flushTimer.current = setTimeout(flush, 300);
+    }
+  }, []);
 
   const setData = useCallback((updater) => {
-    setDataRaw(prev => {
-      const next = typeof updater === 'function' ? updater(prev) : updater;
-      if (savingTimer.current) clearTimeout(savingTimer.current);
-      savingTimer.current = setTimeout(() => saveData(next), 250);
-      return next;
-    });
+    const step = typeof updater === 'function' ? updater : () => updater;
+    pending.current.push(step);
+    setDataRaw(prev => step(prev));
+    if (flushTimer.current) clearTimeout(flushTimer.current);
+    flushTimer.current = setTimeout(flush, 400);
+  }, [flush]);
+
+  const load = useCallback(async () => {
+    try {
+      const { data: loaded, version } = await loadData();
+      // Nothing saved yet: start from a blank league (saved once the admin makes a change).
+      const d = loaded || defaultData();
+      server.current = { data: d, version };
+      setDataRaw(d);
+      setLoadError(false);
+    } catch (e) {
+      // Never treat a failed load as an empty league.
+      setLoadError(true);
+    }
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      let loaded = await loadData();
-      if (!loaded) {
-        loaded = defaultData();
-        await saveData(loaded);
-      }
-      if (!cancelled) setDataRaw(loaded);
-    })();
-    return () => { cancelled = true; };
-  }, []);
+  useEffect(() => { load(); }, [load]);
 
   useEffect(() => {
     const interval = setInterval(async () => {
-      if (editingRef.current) return;
-      const fresh = await loadData();
-      if (fresh) setDataRaw(fresh);
+      if (editingRef.current || pending.current.length || flushing.current) return;
+      try {
+        const { data: fresh, version } = await loadData();
+        if (fresh && version !== server.current.version && !pending.current.length) {
+          server.current = { data: fresh, version };
+          setDataRaw(fresh);
+        }
+      } catch (e) {
+        // try again next time
+      }
     }, 7000);
     return () => clearInterval(interval);
   }, []);
 
+  const onRestored = useCallback((restored, version) => {
+    pending.current = [];
+    server.current = { data: restored, version };
+    setDataRaw(restored);
+  }, []);
+
   const updateFixture = useCallback((divId, updatedFixture) => {
+    // Only this match's scores and date are carried over, onto the latest copy.
+    const { date, h1, a1, h2, a2 } = updatedFixture;
     setData(d => ({
       ...d,
       divisions: d.divisions.map(div => div.id !== divId ? div : {
         ...div,
-        fixtures: div.fixtures.map(f => f.id === updatedFixture.id ? updatedFixture : f),
+        fixtures: div.fixtures.map(f => f.id === updatedFixture.id ? { ...f, date, h1, a1, h2, a2 } : f),
       }),
     }));
   }, [setData]);
@@ -1326,8 +1522,22 @@ export default function App() {
       <RinkDivider />
 
       <main className="max-w-5xl mx-auto px-4 pb-16">
-        {!data && (
+        {syncMsg && (
+          <div className="rounded-md p-3 mb-4 text-sm flex items-center justify-between gap-2" style={{ backgroundColor: '#FBEFE9', color: PALETTE.maroon }}>
+            <span><AlertTriangle size={14} className="inline mr-1 -mt-0.5" /> {syncMsg}</span>
+            <button onClick={() => setSyncMsg('')} aria-label="Dismiss"><X size={14} /></button>
+          </div>
+        )}
+        {!data && !loadError && (
           <p className="text-center py-20 text-gray-500">Loading league data…</p>
+        )}
+        {!data && loadError && (
+          <div className="text-center py-20">
+            <p className="text-gray-600 mb-3">The league tables couldn't be loaded just now.</p>
+            <button onClick={load} className="rounded-md px-3 py-1.5 text-sm font-semibold" style={{ backgroundColor: PALETTE.green, color: '#fff' }}>
+              <RefreshCw size={14} className="inline mr-1.5 -mt-0.5" /> Try again
+            </button>
+          </div>
         )}
         {data && page === 'public' && <PublicPage data={data} />}
         {data && page === 'scores' && (
@@ -1335,8 +1545,8 @@ export default function App() {
             ? <TeamLeaderPage data={data} resultsLocked={data.resultsLocked} onUpdateFixture={updateFixture} />
             : <>
                 <PasswordGate
-                  onSuccess={() => setTeamAuthed(true)}
-                  password={data.teamPassword || TEAM_PASSWORD}
+                  onSuccess={setTeamAuth}
+                  role="team"
                   title="Team leader sign-in"
                   helpText="Share this password with team leaders so they can enter their own rink scores and match dates. It doesn't allow access to team setup, locking or backups."
                 />
@@ -1349,12 +1559,13 @@ export default function App() {
         )}
         {data && page === 'admin' && (
           authed
-            ? <AdminPage data={data} setData={setData} onExit={() => { setAuthed(false); setPage('public'); }} updateFixture={updateFixture} />
+            ? <AdminPage data={data} setData={setData} auth={adminAuth} setAuth={setAdminAuth} onRestored={onRestored}
+                onExit={() => { setAdminAuth(null); setPage('public'); }} updateFixture={updateFixture} />
             : <PasswordGate
-                onSuccess={() => setAuthed(true)}
-                password={ADMIN_PASSWORD}
+                onSuccess={setAdminAuth}
+                role="admin"
                 title="Admin sign-in"
-                helpText="This page is only lightly protected — it stops casual visitors editing results, but is not a substitute for real account security."
+                helpText="Only the league admin can change teams, fixtures, contacts, the lock and backups."
               />
         )}
       </main>

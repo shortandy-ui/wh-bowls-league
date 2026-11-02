@@ -1,0 +1,27 @@
+name: Weekly backup
+
+# Every Monday at 03:00 UTC (4am in summer), April to September.
+# Asks the site to copy the league into its backups (the newest 5 are kept).
+# "Run workflow" on the Actions tab runs it by hand.
+on:
+  schedule:
+    - cron: "0 3 * 4-9 1"
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Take a backup
+        env:
+          SITE_URL: ${{ secrets.SITE_URL }}
+          BACKUP_KEY: ${{ secrets.BACKUP_KEY }}
+        run: |
+          if [ -z "$SITE_URL" ] || [ -z "$BACKUP_KEY" ]; then
+            echo "Add the SITE_URL and BACKUP_KEY secrets first (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+          curl --fail-with-body -sS -X POST "${SITE_URL%/}/api/backup" \
+            -H "Content-Type: application/json" \
+            -H "x-backup-key: $BACKUP_KEY" \
+            -d '{"action":"run"}'

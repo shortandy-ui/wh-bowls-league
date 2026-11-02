@@ -97,22 +97,30 @@ to taste.)
 
 ## Passwords
 
-The Admin and Team leader passwords are set in `src/App.jsx`:
+Passwords are checked by the server and stored there scrambled — they are not
+written anywhere in the code.
 
-```js
-const ADMIN_PASSWORD = 'fish';
-const TEAM_PASSWORD = 'chips';
-```
+- **Admin:** change it in the app under Admin → Settings → Admin password.
+- **Team leaders:** change it under Admin → Settings → Team leader password.
 
-Change them, commit, and push — the site rebuilds automatically. As before,
-these are simple front-end checks, fine for keeping casual visitors from
-editing results, but not real account security.
+The server checks every save: without a password nothing can be changed, team
+leaders can only enter scores and dates, and while results are locked nobody can
+change them (the admin unlocks first).
 
-**Worth knowing:** the `/api/league` (write) and `/api/backup` endpoints are
-currently open to anyone who finds the URL directly, bypassing the password
-screens in the browser — same trust model as the passwords above. If you'd
-like tighter protection later (e.g. proper login for admins, via Static Web
-Apps' built-in authentication), that's a further step I'm happy to help with.
+Saves are version-checked, so two people entering results at the same time don't
+overwrite each other.
+
+## Backups
+
+Admin → Settings → Backups: "Create backup now" keeps a copy on the server and
+downloads one to your device. The newest 5 copies are kept, and any of them can be
+restored (type RESTORE to confirm).
+
+A weekly backup can run automatically (`.github/workflows/weekly-backup.yml`). It
+needs a `BACKUP_KEY` setting in Azure (Static Web App → Settings → Environment
+variables, at least 16 characters) and two GitHub secrets (Settings → Secrets and
+variables → Actions): `SITE_URL` (the site's address) and `BACKUP_KEY` (exactly the
+same value as in Azure).
 
 ## Running it on your own computer first (optional)
 
