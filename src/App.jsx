@@ -212,6 +212,70 @@ const login = (auth) => postJson('auth', { action: 'login', auth });
 const changePassword = (auth, target, newPassword) => postJson('auth', { action: 'setPassword', auth, target, newPassword });
 const backupAction = (auth, body) => postJson('backup', { ...body, auth });
 
+/* ---------------- contacts from the league's Google Sheet ---------------- */
+
+// The committee and team leaders come straight from the "Contacts" tab of the
+// Welwyn Hatfield Bowls Contacts Google Sheet (the same sheet as the website),
+// so they are only ever typed in one place. This public address only hands out
+// people whose Role is Committee or Team leader.
+const SHEET_ID = '12Hm6At_ZuC_qAh5OFVf0j1gwI-5mTDNBaSLRJakqYFo';
+const SHEET_EDIT_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/edit`;
+const TEAM_LEADERS_CSV =
+  'https://script.google.com/macros/s/AKfycbz67bWIZqkqv6OlJlrxn23GVKsorWZrBvTypbLoL6EdePkwz-kM5iwzTFU3jyHAfblT/exec' +
+  '?token=bcclt4YHXIsxT26amDizLPgkq0s8bOwf&sheet=TeamLeaders';
+
+function parseCsv(text) {
+  const rows = []; let row = []; let field = ''; let q = false;
+  text = text.replace(/\r\n?/g, '\n');
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else q = false; }
+      else field += c;
+    } else if (c === '"') q = true;
+    else if (c === ',') { row.push(field); field = ''; }
+    else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+    else field += c;
+  }
+  if (field || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+// → { contacts, error } ; contacts is null while loading
+function useSheetContacts() {
+  const [state, setState] = useState({ contacts: null, error: false });
+  useEffect(() => {
+    let cancelled = false;
+    fetch(TEAM_LEADERS_CSV, { cache: 'no-store' })
+      .then(r => r.text())
+      .then(text => {
+        const rows = parseCsv(text);
+        const head = (rows[0] || []).map(h => h.trim().toLowerCase());
+        if (head.indexOf('name') === -1) throw new Error('unexpected reply');
+        const col = (name) => head.indexOf(name);
+        const contacts = rows.slice(1)
+          .map((r, i) => {
+            const role = (r[col('role')] || '').trim();
+            const club = (r[col('club')] || '').trim();
+            return {
+              id: 'sheet-' + i,
+              name: (r[col('name')] || '').trim(),
+              club: [club, role].filter(Boolean).join(' · '),
+              email: (r[col('email')] || '').trim(),
+              phone: (r[col('telephone')] || '').trim(),
+              committee: role.toLowerCase().startsWith('committee'),
+            };
+          })
+          .filter(c => c.name)
+          .sort((a, b) => (b.committee - a.committee) || a.club.localeCompare(b.club) || a.name.localeCompare(b.name));
+        if (!cancelled) setState({ contacts, error: false });
+      })
+      .catch(() => { if (!cancelled) setState({ contacts: [], error: true }); });
+    return () => { cancelled = true; };
+  }, []);
+  return state;
+}
+
 /* ---------------- small UI atoms ---------------- */
 
 function RinkDivider({ tight }) {
@@ -434,9 +498,9 @@ function PasswordGate({ onSuccess, role, title, helpText }) {
   );
 }
 
-function TeamLeaderPage({ data, resultsLocked, onUpdateFixture }) {
+function TeamLeaderPage({ data, resultsLocked, onUpdateFixture, sheet }) {
   const [view, setView] = useState('results');
-  const contactCount = (data.contacts || []).length;
+  const contactCount = (sheet.contacts || []).length;
   const VIEWS = [
     { id: 'results', label: 'Enter results', icon: ClipboardList },
     { id: 'contacts', label: `Contacts${contactCount ? ` (${contactCount})` : ''}`, icon: BookUser },
@@ -468,15 +532,17 @@ function TeamLeaderPage({ data, resultsLocked, onUpdateFixture }) {
         </>
       )}
 
-      {view === 'contacts' && <ContactsDirectory contacts={data.contacts || []} />}
+      {view === 'contacts' && <ContactsDirectory contacts={sheet.contacts} error={sheet.error} />}
     </div>
   );
 }
 
 /* ---------------- Contacts: read-only directory for team leaders ---------------- */
 
-function ContactsDirectory({ contacts, title }) {
+function ContactsDirectory({ contacts, title, error }) {
   const [query, setQuery] = useState('');
+  if (contacts === null) return <p className="text-sm text-gray-500 py-6 text-center">Loading contacts…</p>;
+  if (error) return <p className="text-sm py-6 text-center" style={{ color: PALETTE.maroon }}>The contacts list couldn't be loaded just now — please try again later.</p>;
   const q = query.trim().toLowerCase();
   const list = contacts.filter(c =>
     !q || [c.name, c.club, c.role, c.email, c.phone].some(v => (v || '').toLowerCase().includes(q))
@@ -487,7 +553,7 @@ function ContactsDirectory({ contacts, title }) {
       <div className="text-center py-12 rounded-xl" style={{ backgroundColor: PALETTE.cream }}>
         <BookUser size={28} className="mx-auto mb-2" style={{ color: PALETTE.gold }} />
         <p className="font-semibold" style={{ color: PALETTE.green }}>No contacts yet</p>
-        <p className="text-sm text-gray-600 mt-1">The league admin hasn't added the contacts list yet.</p>
+        <p className="text-sm text-gray-600 mt-1">No committee members or team leaders are marked in the contacts sheet yet.</p>
       </div>
     );
   }
@@ -1207,7 +1273,7 @@ function AdminSettings({ data, auth, onToggleLock, onBackup, onRestored, onReset
 
 /* ---------------- Admin shell ---------------- */
 
-function AdminPage({ data, setData, auth, setAuth, onExit, updateFixture, onRestored }) {
+function AdminPage({ data, setData, auth, setAuth, onExit, updateFixture, onRestored, sheetContacts }) {
   const [tab, setTab] = useState('setup');
   const [statusMsg, setStatusMsg] = useState('');
 
@@ -1309,7 +1375,20 @@ function AdminPage({ data, setData, auth, setAuth, onExit, updateFixture, onRest
       )}
 
       {tab === 'contacts' && (
-        <ContactsAdmin contacts={data.contacts || []} onChange={contacts => setData(d => ({ ...d, contacts }))} />
+        <div>
+          <div className="rounded-lg p-4 mb-4 text-sm" style={{ backgroundColor: PALETTE.cream, color: PALETTE.ink }}>
+            The committee and team leaders now come straight from the <strong>Contacts</strong> tab of the league's Google Sheet
+            (the same list as the website's Contacts page). To add, change or remove someone, edit the sheet and set their
+            <strong> Role</strong> to Committee or Team leader — this list updates by itself within about 5 minutes.
+            <div className="mt-3">
+              <a href={SHEET_EDIT_URL} target="_blank" rel="noopener noreferrer"
+                className="inline-block rounded-md px-3 py-1.5 text-sm font-semibold" style={{ backgroundColor: PALETTE.green, color: '#fff' }}>
+                Open the contacts sheet
+              </a>
+            </div>
+          </div>
+          <ContactsDirectory contacts={sheetContacts.contacts} error={sheetContacts.error} />
+        </div>
       )}
 
       {tab === 'settings' && (
@@ -1345,6 +1424,7 @@ export default function App() {
   const [loadError, setLoadError] = useState(false);
   const [syncMsg, setSyncMsg] = useState('');
   const editingRef = useRef(false);
+  const sheetContacts = useSheetContacts();
 
   // How saving works: `server` is the last copy of the league the server confirmed
   // (with its version). Each change is kept as a small step ("put this score in")
@@ -1542,7 +1622,7 @@ export default function App() {
         {data && page === 'public' && <PublicPage data={data} />}
         {data && page === 'scores' && (
           teamAuthed
-            ? <TeamLeaderPage data={data} resultsLocked={data.resultsLocked} onUpdateFixture={updateFixture} />
+            ? <TeamLeaderPage data={data} resultsLocked={data.resultsLocked} onUpdateFixture={updateFixture} sheet={sheetContacts} />
             : <>
                 <PasswordGate
                   onSuccess={setTeamAuth}
@@ -1550,16 +1630,16 @@ export default function App() {
                   title="Team leader sign-in"
                   helpText="Share this password with team leaders so they can enter their own rink scores and match dates. It doesn't allow access to team setup, locking or backups."
                 />
-                {(data.contacts || []).length > 0 && (
+                {(sheetContacts.contacts || []).length > 0 && (
                   <div className="mt-10">
-                    <ContactsDirectory contacts={data.contacts} title="Team leaders & committee contacts" />
+                    <ContactsDirectory contacts={sheetContacts.contacts} title="Team leaders & committee contacts" />
                   </div>
                 )}
               </>
         )}
         {data && page === 'admin' && (
           authed
-            ? <AdminPage data={data} setData={setData} auth={adminAuth} setAuth={setAdminAuth} onRestored={onRestored}
+            ? <AdminPage data={data} setData={setData} auth={adminAuth} setAuth={setAdminAuth} onRestored={onRestored} sheetContacts={sheetContacts}
                 onExit={() => { setAdminAuth(null); setPage('public'); }} updateFixture={updateFixture} />
             : <PasswordGate
                 onSuccess={setAdminAuth}
